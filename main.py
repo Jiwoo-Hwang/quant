@@ -1,9 +1,8 @@
-import json
-
 from config import CONFIG
 from market_data import get_market_data
 from news_data import get_news_events
 from strategy import determine_final_decision
+from report import render_final_report
 
 
 def main() -> None:
@@ -17,8 +16,8 @@ def main() -> None:
         news = get_news_events(CONFIG.ticker, CONFIG)
         result = determine_final_decision(data, news, CONFIG)
 
-        print("\n--- Final Analysis Result ---")
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print()
+        print(render_final_report(result))
 
     except Exception as e:
         print("\n[ERROR] 실행 중 오류가 발생했습니다:")
