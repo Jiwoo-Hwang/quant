@@ -98,7 +98,7 @@ def render_final_report(result: Dict[str, Any]) -> str:
 
     lines = []
     lines.append("=" * 72)
-    lines.append(f"TSLA 스윙매매 리포트")
+    lines.append(f"{ticker} 스윙매매 리포트")
     lines.append("=" * 72)
     lines.append(f"종목: {ticker}")
     lines.append(f"최종 판단: {decision}")

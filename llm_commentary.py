@@ -5,7 +5,6 @@ from typing import Dict, Any
 from config import get_openai_client
 
 logger = logging.getLogger(__name__)
-client = get_openai_client()
 
 
 def generate_llm_commentary(packet: Dict[str, Any], final_decision: str) -> Dict[str, str]:
@@ -57,6 +56,7 @@ Return JSON only:
     }
 
     try:
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[

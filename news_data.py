@@ -11,43 +11,24 @@ SESSION = build_session()
 
 
 # ------------------------------------------------------------
-# TSLA 직접 관련 판별
+# 직접 관련 판별
 # ------------------------------------------------------------
-DIRECT_TESLA_TITLE_PATTERNS = [
-    r"\btsla\b",
-    r"\btesla\b",
-    r"\belon musk\b",
-]
-
-NEGATIVE_TESLA_PHRASES = [
-    r"tesla of",
-    r"like tesla",
-    r"the tesla of",
-]
-
-
-def get_direct_tesla_relevance_reason(title: str, summary: str = "") -> Optional[str]:
+def get_direct_relevance_reason(ticker: str, title: str, summary: str = "") -> Optional[str]:
+    ticker_l = ticker.lower()
     title_l = (title or "").lower()
     summary_l = (summary or "").lower()
 
-    if any(re.search(pattern, title_l) for pattern in NEGATIVE_TESLA_PHRASES):
+    negative_patterns = [rf"like {ticker_l}", rf"the {ticker_l} of", rf"{ticker_l} of "]
+    if any(re.search(pattern, title_l) for pattern in negative_patterns):
         return None
 
-    if re.search(r"\btsla\b", title_l):
-        return "제목에 TSLA가 직접 포함되어 있어 종목 관련성이 매우 높습니다."
-    if re.search(r"\btesla\b", title_l):
-        return "제목에 Tesla가 직접 언급되어 TSLA 핵심 뉴스로 볼 수 있습니다."
-    if re.search(r"\belon musk\b", title_l):
-        return "제목에 Elon Musk가 직접 등장해 Tesla와의 연관성이 높습니다."
+    if re.search(rf"\b{ticker_l}\b", title_l):
+        return f"제목에 {ticker}가 직접 포함되어 있어 종목 관련성이 매우 높습니다."
 
-    if any(re.search(pattern, summary_l) for pattern in DIRECT_TESLA_TITLE_PATTERNS):
-        return "요약에서 TSLA 또는 Tesla 관련성이 확인되지만, 예시는 제목 직접 언급만 우선 사용합니다."
+    if re.search(rf"\b{ticker_l}\b", summary_l):
+        return f"요약에서 {ticker} 관련성이 확인됩니다."
 
     return None
-
-
-def is_direct_tesla_example(title: str, summary: str = "") -> bool:
-    return get_direct_tesla_relevance_reason(title, summary) is not None
 
 
 # ------------------------------------------------------------
@@ -154,16 +135,13 @@ def classify_event(title: str, summary: str) -> str:
 # why_it_matters 생성
 # ------------------------------------------------------------
 def build_why_it_matters(event_type: str, title: str, summary: str) -> str:
-    """
-    event_type별로 '왜 TSLA에 중요한지' 한 줄 설명을 생성.
-    """
     title_l = (title or "").lower()
     summary_l = (summary or "").lower()
 
     if event_type == "AI":
         if any(k in title_l or k in summary_l for k in ["robotaxi", "autopilot", "fsd", "self-driving", "robot", "humanoid"]):
-            return "자율주행·로봇·AI 플랫폼 기대치가 Tesla의 장기 밸류에이션과 성장 서사를 직접 바꿀 수 있습니다."
-        return "AI 관련 기대는 Tesla의 소프트웨어·플랫폼 가치와 미래 성장 프리미엄에 영향을 줍니다."
+            return "자율주행·로봇·AI 플랫폼 기대치가 장기 밸류에이션과 성장 서사를 직접 바꿀 수 있습니다."
+        return "AI 관련 기대는 소프트웨어·플랫폼 가치와 미래 성장 프리미엄에 영향을 줍니다."
 
     if event_type == "PRODUCT":
         if any(k in title_l or k in summary_l for k in ["cybertruck", "model y", "model 3", "software update", "launch", "release"]):
@@ -172,7 +150,7 @@ def build_why_it_matters(event_type: str, title: str, summary: str) -> str:
 
     if event_type == "EARNINGS":
         if any(k in title_l or k in summary_l for k in ["guidance", "outlook", "margin", "revenue", "eps", "profit", "loss"]):
-            return "실적·가이던스·마진 변화는 Tesla의 밸류에이션 재평가에 가장 직접적인 재료입니다."
+            return "실적·가이던스·마진 변화는 밸류에이션 재평가에 가장 직접적인 재료입니다."
         return "실적 뉴스는 분기 실적 기대와 다음 분기 전망을 바꾸므로 주가 반응이 크게 나타날 수 있습니다."
 
     if event_type == "REGULATION":
@@ -302,7 +280,7 @@ def get_news_events(ticker: str, config: TradingConfig = CONFIG) -> Dict[str, An
         event_type = classify_event(title, summary)
         weighted_score = score * recency_weight * (0.5 + relevance)
 
-        direct_reason = get_direct_tesla_relevance_reason(title, summary)
+        direct_reason = get_direct_relevance_reason(ticker, title, summary)
         direct_relevance = direct_reason is not None
 
         events.append(

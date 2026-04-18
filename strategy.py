@@ -877,5 +877,3 @@ def determine_final_decision(data: Dict[str, Any], news: Dict[str, Any], config:
     }
 
 
-def determine_final_decision_v2(data: Dict[str, Any], news: Dict[str, Any]) -> Dict[str, Any]:
-    return determine_final_decision(data, news, CONFIG)
