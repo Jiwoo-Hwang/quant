@@ -1,13 +1,22 @@
 import re
+import logging
+from collections import Counter
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
-
-import pandas as pd
 
 from config import TradingConfig, CONFIG, ALPHA_VANTAGE_KEY
 from utils import safe_float, parse_time_published, build_session
 
+logger = logging.getLogger(__name__)
 SESSION = build_session()
+
+_EMPTY_RESULT: Dict[str, Any] = {
+    "events": [],
+    "aggregate_score": 0.0,
+    "sentiment_bias": "NEUTRAL",
+    "top_event_types": [],
+    "key_catalysts": [],
+}
 
 
 # ------------------------------------------------------------
@@ -32,102 +41,62 @@ def get_direct_relevance_reason(ticker: str, title: str, summary: str = "") -> O
 
 
 # ------------------------------------------------------------
-# 이벤트 분류
+# 이벤트 분류 (패턴 미리 컴파일)
 # ------------------------------------------------------------
-EVENT_RULES = [
+_EVENT_RULES_RAW = [
     (
         "AI",
         [
-            r"\bai\b",
-            r"artificial intelligence",
-            r"autopilot",
-            r"fsd",
-            r"full self[- ]driving",
-            r"robotaxi",
-            r"robot",
-            r"humanoid",
-            r"dojo",
-            r"self-driving",
+            r"\bai\b", r"artificial intelligence", r"autopilot", r"fsd",
+            r"full self[- ]driving", r"robotaxi", r"robot", r"humanoid",
+            r"dojo", r"self-driving",
         ],
     ),
     (
         "PRODUCT",
         [
-            r"launch",
-            r"release",
-            r"unveil",
-            r"rollout",
-            r"model y",
-            r"model 3",
-            r"cybertruck",
-            r"software update",
-            r"feature",
-            r"product",
-            r"service",
+            r"launch", r"release", r"unveil", r"rollout", r"model y",
+            r"model 3", r"cybertruck", r"software update", r"feature",
+            r"product", r"service",
         ],
     ),
     (
         "EARNINGS",
         [
-            r"earnings",
-            r"guidance",
-            r"revenue",
-            r"\beps\b",
-            r"profit",
-            r"loss",
-            r"quarter",
-            r"q1",
-            r"q2",
-            r"q3",
-            r"q4",
-            r"margin",
-            r"outlook",
-            r"financial results",
+            r"earnings", r"guidance", r"revenue", r"\beps\b", r"profit",
+            r"loss", r"quarter", r"q1", r"q2", r"q3", r"q4",
+            r"margin", r"outlook", r"financial results",
         ],
     ),
     (
         "REGULATION",
         [
-            r"regulation",
-            r"regulatory",
-            r"approval",
-            r"approved",
-            r"lawsuit",
-            r"legal",
-            r"court",
-            r"investigation",
-            r"\bsec\b",
-            r"\bnhtsa\b",
-            r"recall",
-            r"compliance",
+            r"regulation", r"regulatory", r"approval", r"approved",
+            r"lawsuit", r"legal", r"court", r"investigation",
+            r"\bsec\b", r"\bnhtsa\b", r"recall", r"compliance",
         ],
     ),
     (
         "RATING",
         [
-            r"upgrade",
-            r"downgrade",
-            r"rating",
-            r"analyst",
-            r"price target",
-            r"reiterated",
-            r"initiated",
-            r"neutral",
-            r"buy rating",
-            r"sell rating",
+            r"upgrade", r"downgrade", r"rating", r"analyst", r"price target",
+            r"reiterated", r"initiated", r"neutral", r"buy rating", r"sell rating",
         ],
     ),
+]
+
+_COMPILED_EVENT_RULES: List[tuple] = [
+    (event_type, [re.compile(p) for p in patterns])
+    for event_type, patterns in _EVENT_RULES_RAW
 ]
 
 
 def classify_event(title: str, summary: str) -> str:
     text = f"{title} {summary}".lower()
-
-    for event_type, patterns in EVENT_RULES:
-        for pattern in patterns:
-            if re.search(pattern, text):
+    for event_type, compiled_patterns in _COMPILED_EVENT_RULES:
+        for pattern in compiled_patterns:
+            if pattern.search(text):
                 return event_type
-
     return "GENERAL"
 
 
@@ -170,11 +139,6 @@ def build_why_it_matters(event_type: str, title: str, summary: str) -> str:
 # key_catalysts 구성
 # ------------------------------------------------------------
 def build_key_catalysts(events: List[Dict[str, Any]], top_n: int = 3) -> List[Dict[str, Any]]:
-    """
-    전체 뉴스 이벤트를 event_type별로 집계한 뒤,
-    examples는 TSLA와 직접 관련된 기사만 채우고,
-    각 예시에 why_it_matters 한 줄을 붙인다.
-    """
     buckets: Dict[str, Dict[str, Any]] = {}
 
     for event in events:
@@ -184,12 +148,7 @@ def build_key_catalysts(events: List[Dict[str, Any]], top_n: int = 3) -> List[Di
 
         bucket = buckets.setdefault(
             event_type,
-            {
-                "event_type": event_type,
-                "count": 0,
-                "net_weighted_score": 0.0,
-                "examples": [],
-            },
+            {"event_type": event_type, "count": 0, "net_weighted_score": 0.0, "examples": []},
         )
 
         bucket["count"] += 1
@@ -200,12 +159,10 @@ def build_key_catalysts(events: List[Dict[str, Any]], top_n: int = 3) -> List[Di
         reason = event.get("direct_relevance_reason")
 
         if len(bucket["examples"]) < 2 and reason:
-            bucket["examples"].append(
-                {
-                    "title": title,
-                    "why_it_matters": build_why_it_matters(event_type, title, summary),
-                }
-            )
+            bucket["examples"].append({
+                "title": title,
+                "why_it_matters": build_why_it_matters(event_type, title, summary),
+            })
 
     ranked = sorted(
         buckets.values(),
@@ -213,23 +170,63 @@ def build_key_catalysts(events: List[Dict[str, Any]], top_n: int = 3) -> List[Di
         reverse=True,
     )
 
-    result = []
-    for item in ranked[:top_n]:
-        result.append(
-            {
-                "event_type": item["event_type"],
-                "count": int(item["count"]),
-                "net_weighted_score": round(float(item["net_weighted_score"]), 4),
-                "examples": item["examples"],
-            }
-        )
-
-    return result
+    return [
+        {
+            "event_type": item["event_type"],
+            "count": int(item["count"]),
+            "net_weighted_score": round(float(item["net_weighted_score"]), 4),
+            "examples": item["examples"],
+        }
+        for item in ranked[:top_n]
+    ]
 
 
 # ------------------------------------------------------------
 # 뉴스 수집
 # ------------------------------------------------------------
+def _parse_feed_item(item: Dict[str, Any], ticker: str, now: datetime) -> Optional[Dict[str, Any]]:
+    title = item.get("title", "")
+    summary = item.get("summary", "")
+    published_at = parse_time_published(item.get("time_published"))
+
+    matching = next(
+        (x for x in item.get("ticker_sentiment", []) if x.get("ticker") == ticker),
+        None,
+    )
+    if not matching:
+        return None
+
+    score = safe_float(matching.get("ticker_sentiment_score"))
+    if score is None:
+        return None
+
+    relevance = safe_float(matching.get("relevance_score")) or 0.0
+
+    age_hours = None
+    recency_weight = 1.0
+    if published_at:
+        age_hours = max((now - published_at).total_seconds() / 3600.0, 0.0)
+        recency_weight = max(0.25, 1.0 - (age_hours / 72.0))
+
+    direct_reason = get_direct_relevance_reason(ticker, title, summary)
+
+    return {
+        "title": title,
+        "summary": summary[:280],
+        "event_type": classify_event(title, summary),
+        "sentiment_label": matching.get("ticker_sentiment_label", "neutral"),
+        "score": round(score, 4),
+        "relevance_score": round(relevance, 4),
+        "published_at": published_at.isoformat() if published_at else item.get("time_published") or "unknown",
+        "age_hours": round(age_hours, 2) if age_hours is not None else None,
+        "recency_weight": round(recency_weight, 3),
+        "weighted_score": round(score * recency_weight * (0.5 + relevance), 4),
+        "source": item.get("source", "unknown"),
+        "direct_relevance": direct_reason is not None,
+        "direct_relevance_reason": direct_reason,
+    }
+
+
 def get_news_events(ticker: str, config: TradingConfig = CONFIG) -> Dict[str, Any]:
     url = (
         "https://www.alphavantage.co/query"
@@ -240,77 +237,33 @@ def get_news_events(ticker: str, config: TradingConfig = CONFIG) -> Dict[str, An
         response = SESSION.get(url, timeout=config.request_timeout)
         response.raise_for_status()
         data = response.json()
-    except Exception:
-        return {
-            "events": [],
-            "aggregate_score": 0.0,
-            "sentiment_bias": "NEUTRAL",
-            "top_event_types": [],
-            "key_catalysts": [],
-        }
+    except Exception as e:
+        logger.warning("Alpha Vantage API 요청 실패: %s", e)
+        return dict(_EMPTY_RESULT)
 
-    feed = data.get("feed", []) if isinstance(data, dict) else []
+    # rate limit / API 오류 감지 (Alpha Vantage는 200 OK로 오류 메시지를 반환함)
+    if not isinstance(data, dict):
+        logger.warning("Alpha Vantage 응답 형식 오류")
+        return dict(_EMPTY_RESULT)
+
+    api_message = data.get("Information") or data.get("Note")
+    if api_message:
+        logger.warning("Alpha Vantage API 제한: %s", api_message)
+        return dict(_EMPTY_RESULT)
+
+    feed = data.get("feed", [])
     now = datetime.now(timezone.utc)
-    events: List[Dict[str, Any]] = []
 
-    for item in feed:
-        title = item.get("title", "")
-        summary = item.get("summary", "")
-        published_raw = item.get("time_published")
-        published_at = parse_time_published(published_raw)
-
-        ticker_sentiments = item.get("ticker_sentiment", [])
-        matching = next((x for x in ticker_sentiments if x.get("ticker") == ticker), None)
-        if not matching:
-            continue
-
-        score = safe_float(matching.get("ticker_sentiment_score"))
-        if score is None:
-            continue
-
-        label = matching.get("ticker_sentiment_label", "neutral")
-        relevance = safe_float(matching.get("relevance_score")) or 0.0
-
-        age_hours = None
-        recency_weight = 1.0
-        if published_at:
-            age_hours = max((now - published_at).total_seconds() / 3600.0, 0.0)
-            recency_weight = max(0.25, 1.0 - (age_hours / 72.0))
-
-        event_type = classify_event(title, summary)
-        weighted_score = score * recency_weight * (0.5 + relevance)
-
-        direct_reason = get_direct_relevance_reason(ticker, title, summary)
-        direct_relevance = direct_reason is not None
-
-        events.append(
-            {
-                "title": title,
-                "summary": summary[:280],
-                "event_type": event_type,
-                "sentiment_label": label,
-                "score": round(score, 4),
-                "relevance_score": round(relevance, 4),
-                "published_at": published_at.isoformat() if published_at else published_raw or "unknown",
-                "age_hours": round(age_hours, 2) if age_hours is not None else None,
-                "recency_weight": round(recency_weight, 3),
-                "weighted_score": round(weighted_score, 4),
-                "source": item.get("source", "unknown"),
-                "direct_relevance": direct_relevance,
-                "direct_relevance_reason": direct_reason,
-            }
-        )
+    events = [
+        parsed for item in feed
+        if (parsed := _parse_feed_item(item, ticker, now)) is not None
+    ]
 
     if not events:
-        return {
-            "events": [],
-            "aggregate_score": 0.0,
-            "sentiment_bias": "NEUTRAL",
-            "top_event_types": [],
-            "key_catalysts": [],
-        }
+        return dict(_EMPTY_RESULT)
 
-    aggregate_score = float(pd.Series([e["weighted_score"] for e in events]).mean())
+    scores = [e["weighted_score"] for e in events]
+    aggregate_score = sum(scores) / len(scores)
 
     if aggregate_score >= 0.1:
         sentiment_bias = "BULLISH"
@@ -319,15 +272,15 @@ def get_news_events(ticker: str, config: TradingConfig = CONFIG) -> Dict[str, An
     else:
         sentiment_bias = "NEUTRAL"
 
-    event_type_counts = pd.Series([e["event_type"] for e in events]).value_counts().head(5)
-    top_event_types = [{"event_type": k, "count": int(v)} for k, v in event_type_counts.items()]
-
-    key_catalysts = build_key_catalysts(events, top_n=3)
+    top_event_types = [
+        {"event_type": k, "count": v}
+        for k, v in Counter(e["event_type"] for e in events).most_common(5)
+    ]
 
     return {
         "events": events,
         "aggregate_score": round(aggregate_score, 4),
         "sentiment_bias": sentiment_bias,
         "top_event_types": top_event_types,
-        "key_catalysts": key_catalysts,
+        "key_catalysts": build_key_catalysts(events, top_n=3),
     }

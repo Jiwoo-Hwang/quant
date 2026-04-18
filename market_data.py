@@ -83,8 +83,8 @@ def get_market_data(ticker: str, config: TradingConfig = CONFIG) -> Optional[Dic
     ma20_slope = safe_float(df["MA20"].iloc[-1] - df["MA20"].iloc[ref_idx]) if len(df) >= 5 else None
     ma60_slope = safe_float(df["MA60"].iloc[-1] - df["MA60"].iloc[ref_idx]) if len(df) >= 5 else None
 
-    distance_to_ma20_pct = ((current_price - ma20) / ma20) * 100.0
-    distance_to_ma60_pct = ((current_price - ma60) / ma60) * 100.0
+    distance_to_ma20_pct = safe_ratio(current_price - ma20, ma20) * 100.0 if ma20 else 0.0
+    distance_to_ma60_pct = safe_ratio(current_price - ma60, ma60) * 100.0 if ma60 else 0.0
 
     return {
         "ticker": ticker,
